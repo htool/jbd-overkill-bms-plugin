@@ -1,0 +1,31 @@
+{
+  "name": "jbd-overkill-bms-plugin",
+  "description": "Read JBD/Overkill BMS values over bluetooth",
+  "version": "0.0.1",
+  "private": false,
+  "license": "UNLICENSED",
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-hardware",
+    "marine",
+    "nautic"
+  ],
+  "author": {
+    "name": "Hans Tool",
+    "email": "hans@defect.org"
+  },
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/htool/jbd-overkill-bms-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/htool/jbd-overkill-bms-plugin/issues"
+  },
+  "homepage": "https://github.com/htool/jbd-overkill-bms-plugin#readme",
+  "signalk-plugin-enabled-by-default": true,
+  "dependencies": {
+    "debug": "^4.3.4",
+    "node-ble": "^1.9.0"
+  }
+}

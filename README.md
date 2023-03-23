@@ -1,2 +1,3 @@
 # jbd-overkill-bms-plugin
-Read JBD/Overkill BMS values over bluetooth
+
+Read JBD/Overkill BMS values over bluetooth.
