@@ -166,15 +166,15 @@ module.exports = function(app, options) {
 		function register0x03setData(rawData) { 
       var obj = {}
 		  //pos 4/5 Pack Voltage in 10mv, convert to V
-		  obj.packV = Number(bytesToFloat(rawData[4], rawData[5], 0.01))
+		  obj.voltage = Number(bytesToFloat(rawData[4], rawData[5], 0.01))
 		  //pos 6/7 - Pack Current, positive for chg, neg for discharge, in 10ma, convert to A
-		  obj.packA = Number(bytesToFloat(rawData[6], rawData[7], 0.01, true))
+		  obj.current = Number(bytesToFloat(rawData[6], rawData[7], 0.01, true))
 		  //pos 8/9 - Pack Balance Capacity, in 10mah convert to Ah
 		  obj.packBalCap = Number(bytesToFloat(rawData[8], rawData[9], 0.01))
 		  //pos 10/11 - Pack Rate Capacity, in 10mah, convert to Ah
 		  obj.packRateCap = Number(bytesToFloat(rawData[10], rawData[11], 0.01))
 		  //pos 12/13 - Pack number of cycles
-		  obj.packCycles = Number(toU16(rawData[12], rawData[13]))
+		  obj.chargeCycles = Number(toU16(rawData[12], rawData[13]))
 		  //pos 14/15 bms production date
 		      //TODO
 		  //pos 25 pack cell count - do obj before balance status so we can use it to return the correct size array
@@ -188,13 +188,18 @@ module.exports = function(app, options) {
 		  //pos 22 s/w version
 		  obj.bmsSWVersion = rawData[22];
 		  //pos 23 RSOC (remaining pack capacity, percent)
-		  obj.packSOC = Number(toU8(rawData[23]))
+		  obj.stateOfCharge = Number(toU8(rawData[23])) / 100
 		  //pos 24 FET status, bit0 chg, bit1, dischg (0 FET off, 1 FET on)
 		  obj.FETStatus = getFETStatus(rawData[24])
 		  //pos 26 number of temp sensors (NTCs)
 		  obj.tempSensorCount = toU8(rawData[26])
 		  //pos 27 / 28 / 29 Temp sensor (NTC) values
-		  obj.tempSensorValues = getNTCValues(rawData, obj.tempSensorCount);
+		  obj.tempSensorValues = getNTCValues(rawData, obj.tempSensorCount)
+      var totalTemp = 0
+		  Object.values(obj.tempSensorValues).forEach ( temp => {
+        totalTemp = totalTemp + temp
+      })
+		  obj.temperature = Number((totalTemp / obj.tempSensorCount).toFixed(2))
 		  return obj
     }
 
