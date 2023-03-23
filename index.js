@@ -164,7 +164,7 @@ module.exports = function(app, options) {
 		}
 		
 		function register0x03setData(rawData) { 
-      var obj = {}
+      var obj = {chemistry: 'LifePO4'}
 		  //pos 4/5 Pack Voltage in 10mv, convert to V
 		  obj.voltage = Number(bytesToFloat(rawData[4], rawData[5], 0.01))
 		  //pos 6/7 - Pack Current, positive for chg, neg for discharge, in 10ma, convert to A
@@ -172,7 +172,8 @@ module.exports = function(app, options) {
 		  //pos 8/9 - Pack Balance Capacity, in 10mah convert to Ah
 		  obj.packBalCap = Number(bytesToFloat(rawData[8], rawData[9], 0.01))
 		  //pos 10/11 - Pack Rate Capacity, in 10mah, convert to Ah
-		  obj.packRateCap = Number(bytesToFloat(rawData[10], rawData[11], 0.01))
+		  obj.capacity = {}
+		  obj.capacity.nominal = Number(bytesToFloat(rawData[10], rawData[11], 432)) // 0.01 * 3600 * 12
 		  //pos 12/13 - Pack number of cycles
 		  obj.chargeCycles = Number(toU16(rawData[12], rawData[13]))
 		  //pos 14/15 bms production date
