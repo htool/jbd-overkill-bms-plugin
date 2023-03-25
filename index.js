@@ -131,12 +131,16 @@ module.exports = function(app, options) {
 		    parseData (data)
 		  } else {
         // Multi line
-        receivedData = receivedData.concat(data)
-		    if (receivedData[0] == 0xdd && receivedData[receivedData.length - 1] == STOP_BYTE) {
-		      parseData (receivedData)
-          while (receivedData.length > 0) {
-		        receivedData.pop()
+        if (data[0] != receivedData[0]) {
+          receivedData = receivedData.concat(data)
+		      if (receivedData[0] == 0xdd && receivedData[receivedData.length - 1] == STOP_BYTE) {
+		        parseData (receivedData)
+            while (receivedData.length > 0) {
+		          receivedData.pop()
+            }
           }
+        } else {
+          app.debug('Skipping duplicate: %j', data)
         }
       }
 		}
