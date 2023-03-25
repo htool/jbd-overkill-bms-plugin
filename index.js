@@ -18,9 +18,9 @@ module.exports = function(app, options) {
     title: "BMS settings",
     properties: {
 	    batteryInstance: {
-	      type: 'number',
-	      title: 'Battery instance to use',
-        default: 1
+	      type: 'string',
+	      title: 'Battery instance/name to use',
+        default: "1"
 	    },
       pollFrequency: {
         title: "Poll frequency in seconds",
