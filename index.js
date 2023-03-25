@@ -193,7 +193,7 @@ module.exports = function(app, options) {
 		  //pos 22 s/w version
 		  obj.bmsSWVersion = rawData[22];
 		  //pos 23 RSOC (remaining pack capacity, percent)
-		  obj.stateOfCharge = Number(toU8(rawData[23])) / 100
+		  obj.capacity.stateOfCharge = Number(toU8(rawData[23])) / 100
 		  //pos 24 FET status, bit0 chg, bit1, dischg (0 FET off, 1 FET on)
 		  obj.FETStatus = getFETStatus(rawData[24])
 		  //pos 26 number of temp sensors (NTCs)
