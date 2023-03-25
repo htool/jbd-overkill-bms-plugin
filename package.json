@@ -1,7 +1,7 @@
 {
   "name": "jbd-overkill-bms-plugin",
   "description": "Read JBD/Overkill BMS values over bluetooth",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": false,
   "license": "UNLICENSED",
   "keywords": [
