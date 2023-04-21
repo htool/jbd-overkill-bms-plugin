@@ -25,7 +25,7 @@ module.exports = function(app, options) {
       pollFrequency: {
         title: "Poll frequency in seconds",
         type: "number",
-        default: 5000
+        default: 5
 	    },
       MAC: {
         title: "BMS MAC address",
