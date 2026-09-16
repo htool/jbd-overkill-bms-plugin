@@ -1,9 +1,6 @@
 const id = "jbd-overkill-bms-plugin";
 const debug = require('debug')(id)
 
-var plugin = {}
-var intervalid;
-
 module.exports = function(app, options) {
   "use strict"
   var plugin = {}
@@ -12,6 +9,12 @@ module.exports = function(app, options) {
   plugin.description = "Read JBD/Overkill BMS values over bluetooth"
 
   var unsubscribes = []
+  var stopped = true
+  var destroyBus = null
+  var reconnectTimer = null
+  var sleepResolve = null
+  var deviceRef = null
+  var sessionGen = 0
 
   var schema = {
     type: "object",
@@ -79,51 +82,241 @@ module.exports = function(app, options) {
 		    }
 		    return [];
 		}
-		
-		async function init () {
-		  const {createBluetooth} = require('node-ble')
-		  const {bluetooth, destroy} = createBluetooth()
-		  const adapter = await bluetooth.defaultAdapter()
-		  app.debug('Waiting for Discovering...')
-		  if (! await adapter.isDiscovering())
-		    await adapter.startDiscovery()
-		  const device = await adapter.waitDevice(bmsMac)
-		  app.debug('Connect...')
-		  await device.connect()
-		  const gattServer = await device.gatt()
-		  app.debug('Got primary service...')
-		  // app.debug(gattServer)
-		
-		  // Service
-		  const service1 = await gattServer.getPrimaryService(bmsService)
-		
-		  // app.debug(service1)
-		  const Rx = await service1.getCharacteristic(bmsRx)
-		  app.debug('Got Rx')
-		  await Rx.startNotifications()
-		  Rx.on('valuechanged', buffer => {
-        app.debug(buffer.toString('hex'))
-        var msg = buffer.toArrayInteger()
-		    receiveData(msg)
+
+		function patchDbusNextUnhandled () {
+		  // dbus-next rejects the ProxyObject method promise from the
+		  // message handler. Some of those calls are internal (introspect,
+		  // overlapping waitDevice, teardown) and nobody awaits them, so
+		  // Signal K logs Unhandled rejection: DBusError: Not connected
+		  // with the full reply object. Attaching a catch here marks the
+		  // promise handled; awaited callers still see the rejection.
+		  let ProxyObject
+		  try {
+		    ProxyObject = require('dbus-next/lib/client/proxy-object.js')
+		  } catch (_e) {
+		    return
+		  }
+		  if (!ProxyObject || !ProxyObject.prototype || ProxyObject.prototype._jbdPatched) {
+		    return
+		  }
+		  ProxyObject.prototype._jbdPatched = true
+		  const orig = ProxyObject.prototype._callMethod
+		  ProxyObject.prototype._callMethod = function (iface, member, inSig, outSig, ...args) {
+		    const p = orig.call(this, iface, member, inSig, outSig, ...args)
+		    p.catch(err => {
+		      app.debug(
+		        'dbus %s %s.%s: %s',
+		        this.path,
+		        iface,
+		        member,
+		        bleErrMessage(err)
+		      )
+		    })
+		    return p
+		  }
+		}
+
+		function bleErrMessage (err) {
+		  if (!err) return 'unknown BLE error'
+		  return err.text || err.message || String(err)
+		}
+
+		function isDisconnectedError (err) {
+		  const msg = bleErrMessage(err)
+		  return /not connected|disconnected|no such object|not available/i.test(msg)
+		}
+
+		function sleep (ms) {
+		  return new Promise(resolve => {
+		    sleepResolve = resolve
+		    reconnectTimer = setTimeout(() => {
+		      reconnectTimer = null
+		      sleepResolve = null
+		      resolve()
+		    }, ms)
 		  })
-		
-		  const Tx = await service1.getCharacteristic(bmsTx)
-		  app.debug('Got Tx')
-		
-		  app.debug('Started notifications')
-		  setInterval(function () { pullData(Tx) }, pollInterval)
 		}
-		
+
+		async function withTimeout (promise, ms, label) {
+		  let timer
+		  const timeout = new Promise((_, reject) => {
+		    timer = setTimeout(() => reject(new Error(label + ' timed out')), ms)
+		  })
+		  try {
+		    return await Promise.race([promise, timeout])
+		  } finally {
+		    clearTimeout(timer)
+		    // Timed-out BlueZ calls still settle later; swallow so they
+		    // don't become Unhandled rejection: DBusError: Not connected.
+		    Promise.resolve(promise).catch(() => {})
+		  }
+		}
+
+		async function safeStopDiscovery (adapter) {
+		  try {
+		    if (adapter && await adapter.isDiscovering()) {
+		      await adapter.stopDiscovery()
+		    }
+		  } catch (_e) {}
+		}
+
+		async function teardownSession () {
+		  const device = deviceRef
+		  const destroy = destroyBus
+		  deviceRef = null
+		  destroyBus = null
+		  if (device) {
+		    try {
+		      await device.disconnect()
+		    } catch (_e) {}
+		  }
+		  if (typeof destroy === 'function') {
+		    try {
+		      destroy()
+		    } catch (_e) {}
+		  }
+		}
+
+		async function openSession () {
+		  const { createBluetooth } = require('node-ble')
+		  patchDbusNextUnhandled()
+		  const { bluetooth, destroy } = createBluetooth()
+		  destroyBus = destroy
+		  const adapter = await bluetooth.defaultAdapter()
+		  let weStartedDiscovery = false
+		  if (!await adapter.isDiscovering()) {
+		    app.debug('Starting BLE discovery for %s', bmsMac)
+		    await adapter.startDiscovery()
+		    weStartedDiscovery = true
+		  }
+		  try {
+		    app.debug('Waiting for BMS %s', bmsMac)
+		    const device = await withTimeout(
+		      adapter.waitDevice(bmsMac),
+		      60000,
+		      'Waiting for BMS ' + bmsMac
+		    )
+		    deviceRef = device
+		    if (await device.isConnected()) {
+		      app.debug('Dropping leftover BlueZ connection before reconnect')
+		      try {
+		        await device.disconnect()
+		      } catch (_e) {}
+		      await sleep(500)
+		    }
+		    app.debug('Connect...')
+		    await withTimeout(device.connect(), 20000, 'Connect ' + bmsMac)
+		    if (weStartedDiscovery) {
+		      await safeStopDiscovery(adapter)
+		      weStartedDiscovery = false
+		    }
+		    const gattServer = await withTimeout(
+		      device.gatt(),
+		      20000,
+		      'GATT ' + bmsMac
+		    )
+		    const service1 = await gattServer.getPrimaryService(bmsService)
+		    const Rx = await service1.getCharacteristic(bmsRx)
+		    app.debug('Got Rx')
+		    await Rx.startNotifications()
+		    Rx.on('valuechanged', buffer => {
+		      app.debug(buffer.toString('hex'))
+		      receiveData(buffer.toArrayInteger())
+		    })
+		    const Tx = await service1.getCharacteristic(bmsTx)
+		    app.debug('Got Tx')
+		    return { adapter, device, Tx }
+		  } finally {
+		    if (weStartedDiscovery) {
+		      await safeStopDiscovery(adapter)
+		    }
+		  }
+		}
+
 		async function pullData (Tx) {
-      if (request == request1) {
-        request = request2
-      } else {
-        request = request1
-      }
-		  await Tx.writeValue(Buffer.from(request))
+		  if (stopped || !Tx) return
+		  if (request == request1) {
+		    request = request2
+		  } else {
+		    request = request1
+		  }
+		  // JBD TX is write-without-response; reliable writes extra ATT
+		  // round-trips that BlueZ rejects with Not connected.
+		  await Tx.writeValueWithoutResponse(Buffer.from(request))
 		}
-		
-		init()
+
+		async function pollUntilLost (session) {
+		  await new Promise(resolve => {
+		    let settled = false
+		    const lost = () => {
+		      if (settled) return
+		      settled = true
+		      resolve()
+		    }
+		    try {
+		      session.device.on('disconnect', lost)
+		    } catch (_e) {}
+		    ;(async () => {
+		      while (!stopped && !settled) {
+		        try {
+		          await pullData(session.Tx)
+		        } catch (err) {
+		          if (stopped) break
+		          app.debug('BMS poll: %s', bleErrMessage(err))
+		          if (isDisconnectedError(err)) break
+		        }
+		        if (stopped || settled) break
+		        await sleep(pollInterval)
+		      }
+		      lost()
+		    })().catch(lost)
+		  })
+		}
+
+		async function runLoop (gen) {
+		  if (!bmsMac) {
+		    app.setPluginError('BMS MAC address is not set')
+		    return
+		  }
+		  let backoff = 2000
+		  while (!stopped && sessionGen === gen) {
+		    try {
+		      app.setPluginStatus('Connecting to BMS ' + bmsMac)
+		      const session = await openSession()
+		      if (stopped || sessionGen !== gen) return
+		      backoff = 2000
+		      app.setPluginStatus('Connected to BMS ' + bmsMac)
+		      app.debug('Started notifications')
+		      await pollUntilLost(session)
+		      if (!stopped && sessionGen === gen) {
+		        app.setPluginStatus('BMS disconnected, reconnecting')
+		      }
+		    } catch (err) {
+		      if (!stopped && sessionGen === gen) {
+		        const msg = bleErrMessage(err)
+		        app.debug('BMS BLE: %s', msg)
+		        app.setPluginError('BMS BLE: ' + msg)
+		      }
+		    } finally {
+		      if (sessionGen === gen) {
+		        await teardownSession()
+		      }
+		    }
+		    if (!stopped && sessionGen === gen) {
+		      await sleep(backoff)
+		      backoff = Math.min(backoff * 2, 30000)
+		    }
+		  }
+		}
+
+		stopped = false
+		const gen = ++sessionGen
+		runLoop(gen).catch(err => {
+		  if (!stopped && sessionGen === gen) {
+		    app.debug('BMS loop died: %s', bleErrMessage(err))
+		    app.setPluginError('BMS loop died: ' + bleErrMessage(err))
+		  }
+		})
 		
 		function receiveData (data) {
       // Single line
@@ -162,7 +355,7 @@ module.exports = function(app, options) {
 		     }
 		  }
 		  else {
-		    logger.error('Recieved invalid data from BMS!');
+		    app.debug('Received invalid data from BMS')
 		  }
       receivedData.length = 0
 		}
@@ -391,10 +584,38 @@ module.exports = function(app, options) {
 		
   plugin.stop = function() {
     app.debug("Stopping")
+    stopped = true
+    sessionGen++
     unsubscribes.forEach(f => f());
     unsubscribes = [];
-    clearInterval(intervalid);
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    if (sleepResolve) {
+      const resolve = sleepResolve
+      sleepResolve = null
+      resolve()
+    }
+    Promise.resolve(teardownIfAny()).catch(() => {})
     app.debug("Stopped")
+  }
+
+  async function teardownIfAny () {
+    const device = deviceRef
+    const destroy = destroyBus
+    deviceRef = null
+    destroyBus = null
+    if (device) {
+      try {
+        await device.disconnect()
+      } catch (_e) {}
+    }
+    if (typeof destroy === 'function') {
+      try {
+        destroy()
+      } catch (_e) {}
+    }
   }
 
   return plugin;
